@@ -1,0 +1,18 @@
+# ---- 构建产物（含 Qt 运行时、本地项目资产、含 API Key 的 config.json）----
+build/
+
+# ---- 本地密钥 / 运行配置 ----
+config.json
+
+# ---- 内部工作记录与原始截图 ----
+.workbuddy-ai/
+img/
+outputs/*.png
+
+# ---- IDE / OS ----
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

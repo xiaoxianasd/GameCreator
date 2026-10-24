@@ -1,0 +1,22 @@
+{
+    "model": {
+        "mode": "auto",
+        "cloud": {
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": "",
+            "model": "black-forest-labs/FLUX.1-schnell",
+            "timeout_ms": 180000
+        },
+        "comfyui": {
+            "base_url": "http://127.0.0.1:8188",
+            "workflow": "workflows/comfyui_example.json",
+            "poll_ms": 1000,
+            "max_polls": 180
+        }
+    },
+    "defaults": {
+        "frame_size": 64,
+        "palette_size": 32,
+        "candidates": 4
+    }
+}
