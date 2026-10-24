@@ -4,9 +4,10 @@ build/
 # ---- 本地密钥 / 运行配置 ----
 config.json
 
-# ---- 内部工作记录与原始截图 ----
+# ---- 内部工作记录 ----
 .workbuddy-ai/
-img/
+
+# ---- 早期 UI 走查截图（README 使用 img/ 下的正式截图）----
 outputs/*.png
 
 # ---- IDE / OS ----
