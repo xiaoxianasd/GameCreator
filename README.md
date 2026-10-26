@@ -125,6 +125,12 @@ ComfyUI 用法：在 ComfyUI 里把工作流导出为 **API 格式** JSON，替�
 
 导出结果在 `projects/default/assets/<id>/exports/`：`*-sheet.png`（4x 预览 `*-preview.png`）与 `*-sheet.json`（帧尺寸、方向行映射、锚点、调色板）。
 
+## 背景壁纸
+
+在线壁纸优先使用 JPEG/PNG 图源（`t.mwm.moe`、`loliapi` 只返回 WebP；当前 Qt 构建缺少 WebP 插件时会自动跳过）。
+取到的图片会缓存到 `%LOCALAPPDATA%\GameCreator\GameCreator\cache\wallpapers`，冷启动或断网时先显示缓存、再后台补新图；
+默认每 30 秒轮换，设置页可切换「在线 / 本地 / 在线优先」，本地图片放 `build\wallpapers\`。
+
 ## 后续路线（对应技术路线阶段 2-3）
 
 - 独立视觉审查模型接入（ReviewReport 已预留 `stage: vision`）

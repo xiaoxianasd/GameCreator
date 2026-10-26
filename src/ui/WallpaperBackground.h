@@ -7,6 +7,7 @@
 // - 为 GlassPanel 提供当前壁纸的高斯模糊版本（毛玻璃采样源）
 
 #include <QImage>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
@@ -52,12 +53,18 @@ private:
     void scanLocal();
     bool loadNextLocal();
     void advance();
-    void pushImage(const QImage& img, const QString& origin);
+    void pushImage(const QImage& img, const QString& origin, bool silent = false);
     void beginFade();
     void rebuildBlurred();
     void notifyPanels();
     static QImage makeBlurred(const QImage& src);
     QString effectiveLocalDir() const;
+
+    // 在线壁纸磁盘缓存：启动时先显示上次缓存的图，断网也能轮换
+    QString cacheDir() const;
+    void loadCachedWallpapers();
+    void saveToCache(const QImage& img, const QString& origin);
+    void pruneCache();
 
     QNetworkAccessManager* m_nam = nullptr;
     QTimer* m_timer = nullptr;
@@ -77,6 +84,8 @@ private:
     int m_failStreak = 0;
     int m_pending = 0;
     bool m_started = false;
+    QStringList m_endpoints;
+    QString m_lastError;
 };
 
 } // namespace gc

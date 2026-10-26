@@ -1,15 +1,20 @@
 #include "ui/WallpaperBackground.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGraphicsBlurEffect>
 #include <QGraphicsPixmapItem>
 #include <QGraphicsScene>
+#include <QImageReader>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPainter>
 #include <QPainterPath>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QVariantAnimation>
 
@@ -17,12 +22,23 @@ namespace gc {
 
 namespace {
 
-// 公开动漫壁纸图床（直接返回图片或 302 跳转，横版）
-const char* kEndpoints[] = {
-    "https://t.mwm.moe/pc/",
-    "https://www.loliapi.com/acg/pc/",
-    "https://api.paugram.com/wallpaper/",
-};
+// 在线图源：优先返回 JPEG/PNG 的源。
+// t.mwm.moe / loliapi 只返回 WebP，而官方 Qt 安装包不一定带 qwebp 插件，
+// 因此只有在运行时可解码 WebP 时才启用，避免“下载成功但解不出来”的假失败。
+QStringList onlineEndpoints()
+{
+    QStringList out;
+    out << QStringLiteral("https://api.paugram.com/wallpaper/")
+        << QStringLiteral("https://www.dmoe.cc/random.php")
+        << QStringLiteral("https://img.xjh.me/random_img.php?type=bg&ctype=acg&return=302");
+
+    const QList<QByteArray> formats = QImageReader::supportedImageFormats();
+    if (formats.contains(QByteArrayLiteral("webp"))) {
+        out << QStringLiteral("https://t.mwm.moe/pc/")
+            << QStringLiteral("https://www.loliapi.com/acg/pc/");
+    }
+    return out;
+}
 
 constexpr int kMaxPoolSize = 10;
 constexpr int kMaxImageWidth = 2560;
@@ -93,13 +109,19 @@ void WallpaperBackground::start()
     if (m_started)
         return;
     m_started = true;
+    m_endpoints = onlineEndpoints();
 
     if (m_mode == Local) {
         scanLocal();
         loadNextLocal();
         return;
     }
-    // Online / OnlineFirst 都先尝试在线
+
+    if (!QImageReader::supportedImageFormats().contains(QByteArrayLiteral("webp")))
+        emit statusMessage(QStringLiteral("提示：当前 Qt 运行时不支持 WebP，已跳过 WebP 图源。"));
+
+    // 先读磁盘缓存：断网或冷启动时也能立刻显示壁纸并继续轮换
+    loadCachedWallpapers();
     requestOnline(4);
     if (m_mode == OnlineFirst) {
         // 同时准备本地列表，在线失败时可立即兜底
@@ -121,13 +143,80 @@ void WallpaperBackground::applyAndReload()
     start();
 }
 
+// ---------------------------------------------------------------- 磁盘缓存
+
+QString WallpaperBackground::cacheDir() const
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (base.isEmpty())
+        base = QCoreApplication::applicationDirPath() + QStringLiteral("/cache");
+    return base + QStringLiteral("/wallpapers");
+}
+
+void WallpaperBackground::loadCachedWallpapers()
+{
+    const QDir dir(cacheDir());
+    if (!dir.exists())
+        return;
+
+    const QStringList files = dir.entryList(
+        { QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"), QStringLiteral("*.png") },
+        QDir::Files, QDir::Time);
+    int loaded = 0;
+    for (const QString& f : files) {
+        if (loaded >= 4)
+            break;
+        QImage img(dir.absoluteFilePath(f));
+        if (img.isNull())
+            continue;
+        pushImage(img, dir.absoluteFilePath(f), true);
+        ++loaded;
+    }
+    if (loaded > 0)
+        emit statusMessage(QStringLiteral("已从本地缓存载入 %1 张壁纸，正在获取新图…").arg(loaded));
+}
+
+void WallpaperBackground::saveToCache(const QImage& img, const QString& origin)
+{
+    if (img.isNull() || img.width() < 320)
+        return;
+    QDir dir(cacheDir());
+    if (!dir.exists() && !dir.mkpath(QStringLiteral(".")))
+        return;
+
+    const QByteArray hash = QCryptographicHash::hash(origin.toUtf8(), QCryptographicHash::Md5)
+                                .toHex().left(12);
+    const QString path = dir.filePath(QStringLiteral("wp-%1.jpg")
+                                          .arg(QString::fromLatin1(hash)));
+    if (QFileInfo::exists(path))
+        return;
+
+    QImage out = img;
+    if (out.width() > 1920)
+        out = out.scaledToWidth(1920, Qt::SmoothTransformation);
+    if (out.save(path, "JPEG", 85))
+        pruneCache();
+}
+
+void WallpaperBackground::pruneCache()
+{
+    constexpr int kMaxCacheFiles = 24;
+    QDir dir(cacheDir());
+    const QStringList files = dir.entryList({ QStringLiteral("wp-*.jpg") },
+                                            QDir::Files, QDir::Time);
+    for (int i = kMaxCacheFiles; i < files.size(); ++i)
+        QFile::remove(dir.filePath(files[i]));
+}
+
 // ---------------------------------------------------------------- 在线拉取
 
 void WallpaperBackground::requestOnline(int count)
 {
+    if (m_endpoints.isEmpty())
+        return;
     for (int i = 0; i < count && m_pending < 6; ++i) {
-        const QString url = QString::fromLatin1(kEndpoints[m_endpointIdx]);
-        m_endpointIdx = (m_endpointIdx + 1) % int(std::size(kEndpoints));
+        const QString url = m_endpoints.at(m_endpointIdx);
+        m_endpointIdx = (m_endpointIdx + 1) % m_endpoints.size();
 
         QNetworkRequest req{ QUrl(url) };
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -143,12 +232,24 @@ void WallpaperBackground::requestOnline(int count)
             const QImage img = QImage::fromData(data);
             if (reply->error() == QNetworkReply::NoError && !img.isNull()) {
                 m_failStreak = 0;
+                saveToCache(img, reply->url().toString());
                 pushImage(img, reply->url().toString());
             } else {
+                const QString contentType =
+                    reply->header(QNetworkRequest::ContentTypeHeader).toString();
+                if (reply->error() != QNetworkReply::NoError)
+                    m_lastError = reply->errorString();
+                else
+                    m_lastError = QStringLiteral("无法解码 %1 图片（当前 Qt 可能缺少对应插件）")
+                                      .arg(contentType.isEmpty() ? QStringLiteral("未知格式")
+                                                                 : contentType);
                 ++m_failStreak;
-                if (m_failStreak == 3) {
-                    emit statusMessage(QStringLiteral("在线壁纸连续获取失败，尝试本地图片文件夹。"));
-                    if (m_mode != Local && m_pool.isEmpty()) {
+                // 已经缓存/加载了图片时不打扰用户，只有一张都没有才提示并回退本地
+                if (m_failStreak == 3 && m_pool.isEmpty()) {
+                    emit statusMessage(
+                        QStringLiteral("在线壁纸暂不可用（%1），尝试本地图片文件夹。")
+                            .arg(m_lastError));
+                    if (m_mode != Local) {
                         scanLocal();
                         loadNextLocal();
                     }
@@ -195,7 +296,7 @@ bool WallpaperBackground::loadNextLocal()
 
 // ---------------------------------------------------------------- 轮换
 
-void WallpaperBackground::pushImage(const QImage& imgIn, const QString& origin)
+void WallpaperBackground::pushImage(const QImage& imgIn, const QString& origin, bool silent)
 {
     Q_UNUSED(origin)
     QImage img = imgIn;
@@ -226,7 +327,8 @@ void WallpaperBackground::pushImage(const QImage& imgIn, const QString& origin)
         notifyPanels();
         if (!m_timer->isActive())
             m_timer->start(m_intervalSec * 1000);
-        emit statusMessage(QStringLiteral("背景壁纸已加载，每 %1 秒轮换。").arg(m_intervalSec));
+        if (!silent)
+            emit statusMessage(QStringLiteral("背景壁纸已加载，每 %1 秒轮换。").arg(m_intervalSec));
     }
 }
 
