@@ -77,7 +77,9 @@ cmake --build build -j
 
 > 注意：直接双击 `build\GameCreator.exe` 即可运行——构建时 windeployqt 已把所需 DLL
 > （含 `platforms\qwindows.dll`）部署到 exe 旁；没有它们程序会静默退出。
-> 运行项目目录为 `build\projects\default\`。
+> 运行项目目录为仓库根目录的 `projects\default\`。素材项目已加入 `.gitignore`，不会提交到仓库；
+> 首次启动会自动把旧的 `build\projects` 复制过来（旧目录保留），也可用环境变量
+> `GAMECREATOR_PROJECTS_DIR` 指定其它位置。
 
 ## 生图模型配置
 
@@ -121,7 +123,7 @@ ComfyUI 用法：在 ComfyUI 里把工作流导出为 **API 格式** JSON，替�
 5. 每个方向选一张点「② 标准化并锁定」
 6. 点「③ 导出 Sprite Sheet」→ 自动运行确定性检查并弹报告
 
-导出结果在 `build/projects/default/assets/<id>/exports/`：`*-sheet.png`（4x 预览 `*-preview.png`）与 `*-sheet.json`（帧尺寸、方向行映射、锚点、调色板）。
+导出结果在 `projects/default/assets/<id>/exports/`：`*-sheet.png`（4x 预览 `*-preview.png`）与 `*-sheet.json`（帧尺寸、方向行映射、锚点、调色板）。
 
 ## 后续路线（对应技术路线阶段 2-3）
 

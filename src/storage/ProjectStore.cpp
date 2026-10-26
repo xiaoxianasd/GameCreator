@@ -1,10 +1,13 @@
 #include "storage/ProjectStore.h"
 
+#include <QCoreApplication>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStandardPaths>
 
 namespace gc {
 
@@ -13,6 +16,88 @@ ProjectStore::ProjectStore(const QString& projectsRoot, const QString& projectNa
     , m_projectName(projectName)
 {
     m_projectDir = QDir(m_root).filePath(m_projectName);
+}
+
+QString ProjectStore::resolveProjectsRoot()
+{
+    const QByteArray env = qgetenv("GAMECREATOR_PROJECTS_DIR");
+    if (!env.isEmpty())
+        return QDir::cleanPath(QString::fromLocal8Bit(env));
+
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QDir repoRoot(appDir.absoluteFilePath(QStringLiteral("..")));
+    if (QFileInfo::exists(repoRoot.filePath(QStringLiteral("CMakeLists.txt")))
+        && QFileInfo::exists(repoRoot.filePath(QStringLiteral("src"))))
+        return QDir::cleanPath(repoRoot.filePath(QStringLiteral("projects")));
+
+    const QString portable = appDir.filePath(QStringLiteral("projects"));
+    if (QFileInfo(appDir.path()).isWritable())
+        return QDir::cleanPath(portable);
+
+    return QDir::cleanPath(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+                           + QStringLiteral("/projects"));
+}
+
+bool ProjectStore::migrateLegacyProjects(const QString& legacyRoot, const QString& targetRoot,
+                                         QString* message)
+{
+    const QString legacy = QDir::cleanPath(legacyRoot);
+    const QString target = QDir::cleanPath(targetRoot);
+    if (legacy == target || !QDir(legacy).exists())
+        return false;
+
+    // 目标已有内容（项目/文件）时绝不覆盖
+    QDir targetDir(target);
+    if (targetDir.exists()) {
+        const QStringList existing =
+            targetDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Files);
+        if (!existing.isEmpty())
+            return false;
+    }
+
+    QDir legacyDir(legacy);
+    if (legacyDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Files).isEmpty())
+        return false;
+
+    if (!QDir().mkpath(target)) {
+        if (message)
+            *message = QStringLiteral("旧项目迁移失败：无法创建 %1")
+                           .arg(QDir::toNativeSeparators(target));
+        return false;
+    }
+
+    QDirIterator it(legacy, QDirIterator::Subdirectories);
+    int copied = 0;
+    while (it.hasNext()) {
+        const QString src = it.next();
+        const QString rel = legacyDir.relativeFilePath(src);
+        const QFileInfo fi(src);
+        if (fi.isDir()) {
+            QDir(target).mkpath(rel);
+            continue;
+        }
+        const QString dst = QDir(target).filePath(rel);
+        QDir().mkpath(QFileInfo(dst).path());
+        if (QFileInfo::exists(dst))
+            continue;
+        if (!QFile::copy(src, dst)) {
+            // 目标是空目录，失败时清掉半成品，避免下次启动误判“已迁移”
+            QDir(target).removeRecursively();
+            if (message)
+                *message = QStringLiteral("旧项目迁移中断：复制失败 %1")
+                               .arg(QDir::toNativeSeparators(src));
+            return false;
+        }
+        ++copied;
+    }
+
+    if (message) {
+        *message = QStringLiteral("已将旧项目从 %1 迁移到 %2（%3 个文件，旧目录保留）")
+                       .arg(QDir::toNativeSeparators(legacy),
+                            QDir::toNativeSeparators(target))
+                       .arg(copied);
+    }
+    return true;
 }
 
 bool ProjectStore::createOrOpen(QString* error)

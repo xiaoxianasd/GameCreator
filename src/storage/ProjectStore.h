@@ -68,6 +68,18 @@ public:
 
     ProjectStore(const QString& projectsRoot, const QString& projectName);
 
+    // 解析项目根目录，优先级：
+    //   1. 环境变量 GAMECREATOR_PROJECTS_DIR
+    //   2. 开发布局（exe 在 build/，上一级含 CMakeLists.txt 与 src/）→ <repo>/projects
+    //   3. 便携布局：exe 同级的 projects/
+    //   4. 用户数据目录（exe 目录不可写时）
+    static QString resolveProjectsRoot();
+
+    // 首次启动把旧 build/projects 复制到新根目录，旧目录保留。
+    // 目标目录已有内容时跳过；返回是否实际执行了迁移。
+    static bool migrateLegacyProjects(const QString& legacyRoot, const QString& targetRoot,
+                                      QString* message = nullptr);
+
     bool createOrOpen(QString* error = nullptr);
 
     QString projectName() const { return m_projectName; }

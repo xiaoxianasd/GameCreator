@@ -41,8 +41,12 @@ MainWindow::MainWindow(QWidget* parent)
     const QString cfgPath = ModelRouter::defaultConfigPath();
     m_cfg = ModelRouter::load(cfgPath, true);
 
-    const QString projectsRoot =
-        QCoreApplication::applicationDirPath() + QStringLiteral("/projects");
+    // 项目默认落在仓库根目录的 projects/；首次运行把旧的 build/projects 迁移过来
+    const QString legacyRoot = QCoreApplication::applicationDirPath() + QStringLiteral("/projects");
+    const QString projectsRoot = ProjectStore::resolveProjectsRoot();
+    QString migrationNote;
+    if (QDir::cleanPath(legacyRoot) != projectsRoot)
+        ProjectStore::migrateLegacyProjects(legacyRoot, projectsRoot, &migrationNote);
     m_store = new ProjectStore(projectsRoot, QStringLiteral("default"));
     QString err;
     if (!m_store->createOrOpen(&err))
@@ -90,6 +94,8 @@ MainWindow::MainWindow(QWidget* parent)
     buildUi();
 
     appendLog(QStringLiteral("项目目录：%1").arg(m_store->projectDir()));
+    if (!migrationNote.isEmpty())
+        appendLog(migrationNote);
     appendLog(QStringLiteral("配置文件：%1").arg(cfgPath));
     appendLog(QStringLiteral("当前适配器模式：%1（可在「生成」页切换）")
                   .arg(ModelRouter::modeToDisplay(ModelRouter::resolveMode(m_cfg))));
