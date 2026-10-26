@@ -597,6 +597,7 @@ AssetSpec MainWindow::buildSpecFromUi() const
 void MainWindow::onTypeChanged(int index)
 {
     const bool isChar = index == 0;
+    const bool isScene = index == 2;
     for (int i = 0; i < 4; ++i)
         m_dirChecks[i]->setEnabled(isChar);
     m_masterBtn->setEnabled(isChar);
@@ -604,6 +605,10 @@ void MainWindow::onTypeChanged(int index)
                               : QStringLiteral("② 标准化该候选"));
     m_exportBtn->setText(isChar ? QStringLiteral("③ 导出 Sprite Sheet")
                                 : QStringLiteral("③ 导出素材包"));
+    // 场景概念图会按 2 倍尺寸输出，这里明确提示，避免“选了 64 却得到 128”的困惑
+    m_frameSizeCombo->setToolTip(
+        isScene ? QStringLiteral("场景概念图按 2× 输出（64 → 128×128），保留更多画面细节")
+                : QStringLiteral("单帧输出的像素尺寸"));
 }
 
 void MainWindow::onPickReference()
@@ -627,6 +632,11 @@ void MainWindow::onGenerate()
     if (spec.type == AssetType::Character && spec.directions.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("角色素材请至少选择一个方向。"));
         return;
+    }
+    if (spec.type == AssetType::Scene) {
+        appendLog(QStringLiteral("场景概念图按 2× 输出：%1×%1（目标帧尺寸 %2）")
+                      .arg(spec.outputSize())
+                      .arg(spec.frameSize));
     }
 
     // 生成模式覆盖

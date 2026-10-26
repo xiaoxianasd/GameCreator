@@ -10,9 +10,11 @@
 #include "orchestrator/TaskOrchestrator.h"
 #include "storage/ProjectStore.h"
 
+#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QImage>
+#include <QPainter>
 #include <QTimer>
 #include <iostream>
 
@@ -177,12 +179,91 @@ bool standardizeAndLock(const QString& direction)
     return true;
 }
 
+// 标准化尺寸回归：场景按 2× 输出，物品按 1× 输出，且确定性检查必须通过。
+bool runSizingChecks()
+{
+    bool allOk = true;
+
+    // ---- 场景：frameSize=64 → 输出 128×128 ----
+    {
+        AssetSpec spec;
+        spec.id = QStringLiteral("spec-scene-check");
+        spec.type = AssetType::Scene;
+        spec.frameSize = 64;
+        spec.paletteSize = 32;
+
+        QImage raw(512, 512, QImage::Format_ARGB32);
+        raw.fill(QColor(24, 28, 40));
+        QPainter p(&raw);
+        p.fillRect(0, 0, 512, 150, QColor(40, 58, 86));
+        p.fillRect(0, 150, 512, 170, QColor(64, 84, 58));
+        p.fillRect(0, 320, 512, 192, QColor(92, 68, 48));
+        for (int i = 0; i < 8; ++i)
+            p.fillRect(30 + i * 58, 110 + (i % 3) * 60, 46, 120,
+                       QColor(120 + i * 12, 70 + i * 6, 60 + i * 4));
+        p.end();
+
+        const StandardizeResult r = AssetFactory::standardize(raw, spec);
+        DeterministicChecks::FrameEntry e;
+        e.image = r.frame;
+        const ReviewReport rep =
+            DeterministicChecks::run(spec, QVector<DeterministicChecks::FrameEntry>{ e });
+        const bool sizeOk = r.frame.width() == 128 && r.frame.height() == 128;
+        std::cout << "[check] 场景输出 " << r.frame.width() << "x" << r.frame.height()
+                  << "（期望 128x128）: " << (sizeOk ? "PASS" : "FAIL")
+                  << " | 确定性检查: " << (rep.passed ? "PASS" : "FAIL") << std::endl;
+        for (const ReviewIssue& i : rep.issues)
+            std::cout << "    [" << i.severity.toStdString() << "] "
+                      << i.id.toStdString() << " - " << i.message.toStdString() << std::endl;
+        allOk = allOk && sizeOk && rep.passed;
+    }
+
+    // ---- 物品：frameSize=64 → 输出 64×64 ----
+    {
+        AssetSpec spec;
+        spec.id = QStringLiteral("spec-item-check");
+        spec.type = AssetType::Item;
+        spec.frameSize = 64;
+        spec.paletteSize = 32;
+
+        QImage raw(512, 512, QImage::Format_ARGB32);
+        raw.fill(QColor(28, 28, 28));
+        QPainter p(&raw);
+        p.fillRect(170, 150, 170, 280, QColor(176, 154, 76));
+        p.fillRect(200, 110, 110, 46, QColor(208, 192, 120));
+        p.fillRect(190, 320, 130, 44, QColor(112, 76, 54));
+        p.end();
+
+        const StandardizeResult r = AssetFactory::standardize(raw, spec);
+        DeterministicChecks::FrameEntry e;
+        e.image = r.frame;
+        const ReviewReport rep =
+            DeterministicChecks::run(spec, QVector<DeterministicChecks::FrameEntry>{ e });
+        const bool sizeOk = r.frame.width() == 64 && r.frame.height() == 64;
+        std::cout << "[check] 物品输出 " << r.frame.width() << "x" << r.frame.height()
+                  << "（期望 64x64）: " << (sizeOk ? "PASS" : "FAIL")
+                  << " | 确定性检查: " << (rep.passed ? "PASS" : "FAIL") << std::endl;
+        for (const ReviewIssue& i : rep.issues)
+            std::cout << "    [" << i.severity.toStdString() << "] "
+                      << i.id.toStdString() << " - " << i.message.toStdString() << std::endl;
+        allOk = allOk && sizeOk && rep.passed;
+    }
+
+    return allOk;
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("PipelineTest"));
+
+    std::cout << "--- 标准化尺寸检查（场景 2x / 物品 1x）---" << std::endl;
+    if (!runSizingChecks()) {
+        std::cout << "[FAIL] 场景/物品输出尺寸或确定性检查未通过" << std::endl;
+        return 3;
+    }
 
     const QString root = QCoreApplication::applicationDirPath() + QStringLiteral("/test-projects");
     g_store = new ProjectStore(root, QStringLiteral("test"));

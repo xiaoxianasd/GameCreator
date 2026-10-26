@@ -69,13 +69,15 @@ public:
             }
 
             // ---- 2. 帧尺寸 ----
+            // 场景概念图按 2 倍目标尺寸输出，其余类型等于 frameSize。
+            const int expectedSize = spec.outputSize();
             weightTotal += 2.0;
-            if (img.width() == spec.frameSize && img.height() == spec.frameSize) {
+            if (img.width() == expectedSize && img.height() == expectedSize) {
                 weightPass += 2.0;
             } else {
                 addIssue(report, QStringLiteral("size-mismatch"), Severity::Error,
                          QStringLiteral("%1：帧尺寸 %2x%3，要求 %4x%4")
-                             .arg(dirName).arg(img.width()).arg(img.height()).arg(spec.frameSize));
+                             .arg(dirName).arg(img.width()).arg(img.height()).arg(expectedSize));
             }
 
             // ---- 3. 内容存在与包围盒 ----
@@ -89,16 +91,19 @@ public:
             weightPass += 2.0;
 
             // ---- 4. 内容不贴边（透明边缘干净）----
-            weightTotal += 1.0;
-            const bool touchTop = bbox.top() == 0;
-            const bool touchLeft = bbox.left() == 0;
-            const bool touchRight = bbox.right() == img.width() - 1;
-            const bool touchBottom = bbox.bottom() >= img.height() - 1;
-            if (touchTop || touchLeft || touchRight || touchBottom) {
-                addIssue(report, QStringLiteral("content-touch-edge"), Severity::Warning,
-                         QStringLiteral("%1：内容贴近画布边缘，可能在动画中产生裁切风险").arg(dirName));
-            } else {
-                weightPass += 1.0;
+            // 场景概念图铺满画布是预期行为，不做精灵式的透明边检查。
+            if (spec.type != AssetType::Scene) {
+                weightTotal += 1.0;
+                const bool touchTop = bbox.top() == 0;
+                const bool touchLeft = bbox.left() == 0;
+                const bool touchRight = bbox.right() == img.width() - 1;
+                const bool touchBottom = bbox.bottom() >= img.height() - 1;
+                if (touchTop || touchLeft || touchRight || touchBottom) {
+                    addIssue(report, QStringLiteral("content-touch-edge"), Severity::Warning,
+                             QStringLiteral("%1：内容贴近画布边缘，可能在动画中产生裁切风险").arg(dirName));
+                } else {
+                    weightPass += 1.0;
+                }
             }
 
             // ---- 5. 调色板颜色数 ----

@@ -46,6 +46,13 @@ struct AssetSpec {
     int    maxRounds    = 3;
     double minScore     = 0.6;
 
+    // 实际输出边长：场景概念图保留 2 倍细节，其余类型等于 frameSize。
+    // 这是「标准化产物尺寸」的唯一口径，检查、导出和 UI 提示都应使用它。
+    int outputSize() const
+    {
+        return type == AssetType::Scene ? frameSize * 2 : frameSize;
+    }
+
     QJsonObject toJson() const
     {
         QJsonObject o;

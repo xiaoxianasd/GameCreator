@@ -20,6 +20,21 @@ inline int colorDist(QRgb a, QRgb b)
     return dr * dr + dg * dg + db * db;
 }
 
+// 场景概念图固定输出为正方形：只做居中的裁切/补边，不做二次缩放，
+// 避免破坏已经降采样好的像素网格。
+QImage fitToSquare(const QImage& src, int size)
+{
+    if (src.width() == size && src.height() == size)
+        return src;
+    QImage out(size, size, QImage::Format_ARGB32);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, false);
+    p.drawImage((size - src.width()) / 2, (size - src.height()) / 2, src);
+    p.end();
+    return out;
+}
+
 // 中位切分的一个颜色盒
 struct ColorBox {
     QVector<QRgb> pixels;
@@ -282,8 +297,7 @@ QVector<QRgb> AssetFactory::paletteFromRaw(const QImage& raw, const AssetSpec& s
     if (spec.type != AssetType::Scene && !spec.sourceHasAlpha)
         img = removeBackground(img);
     img = cropToContent(img);
-    img = downscaleBlock(img, spec.type == AssetType::Scene ? spec.frameSize * 2
-                                                            : spec.frameSize);
+    img = downscaleBlock(img, spec.outputSize());
     return buildPalette(img, spec.paletteSize);
 }
 
@@ -411,8 +425,9 @@ StandardizeResult AssetFactory::standardize(const QImage& raw, const AssetSpec& 
     result.contentRect = contentBounds(img);
 
     if (spec.type == AssetType::Scene) {
-        // 场景：整图像素化到 frameSize*2 并量化，不做锚点对齐
-        img = downscaleBlock(img, spec.frameSize * 2);
+        // 场景：整图像素化到 2 倍目标尺寸并量化，不做锚点对齐
+        img = downscaleBlock(img, spec.outputSize());
+        img = fitToSquare(img, spec.outputSize());
         QVector<QRgb> pal = sharedPalette.isEmpty()
                                 ? buildPalette(img, qMax(spec.paletteSize, 48))
                                 : sharedPalette;
