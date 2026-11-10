@@ -64,7 +64,12 @@ MainWindow::MainWindow(QWidget* parent)
                 c.direction = direction;
                 c.rawAbsPath = m_store->absolutePath(rawPath);
                 c.seed = seed;
-                c.seqInDir = int(m_candidates.size()) + 1;
+                int seq = 1;
+                for (const CandInfo& existing : m_candidates) {
+                    if (existing.direction == direction)
+                        ++seq;
+                }
+                c.seqInDir = seq;
                 m_candidates.append(c);
 
                 QPixmap pm(c.rawAbsPath);
@@ -236,7 +241,11 @@ QWidget* MainWindow::buildGeneratePage()
     m_frameSizeCombo = new QComboBox(wrap);
     for (int s : { 32, 48, 64, 128 })
         m_frameSizeCombo->addItem(QStringLiteral("%1 x %1 像素").arg(s), s);
-    m_frameSizeCombo->setCurrentIndex(2); // 默认 64
+    {
+        const int targetFs = m_stylePack.frameSize > 0 ? m_stylePack.frameSize : m_cfg.frameSize;
+        const int fsIdx = m_frameSizeCombo->findData(targetFs);
+        m_frameSizeCombo->setCurrentIndex(fsIdx >= 0 ? fsIdx : 2); // 默认 64
+    }
     form->addRow(QStringLiteral("目标帧尺寸"), m_frameSizeCombo);
 
     m_candidateSpin = new QSpinBox(wrap);
@@ -249,6 +258,10 @@ QWidget* MainWindow::buildGeneratePage()
     m_modeCombo->addItem(QStringLiteral("云端 API"), QStringLiteral("cloud"));
     m_modeCombo->addItem(QStringLiteral("本地 ComfyUI"), QStringLiteral("comfyui"));
     m_modeCombo->addItem(QStringLiteral("离线模拟（无需 API）"), QStringLiteral("mock"));
+    {
+        const int modeIdx = m_modeCombo->findData(m_cfg.mode.toLower());
+        m_modeCombo->setCurrentIndex(modeIdx >= 0 ? modeIdx : 0);
+    }
     form->addRow(QStringLiteral("生成模式"), m_modeCombo);
 
     // 参考图
@@ -708,6 +721,11 @@ void MainWindow::onSettings()
     }
     if (m_orch)
         m_orch->setConfig(m_cfg);
+    if (m_modeCombo) {
+        const int modeIdx = m_modeCombo->findData(m_cfg.mode.toLower());
+        if (modeIdx >= 0)
+            m_modeCombo->setCurrentIndex(modeIdx);
+    }
     appendLog(QStringLiteral("设置已保存到 %1，当前生效模式：%2")
                   .arg(QDir::toNativeSeparators(cfgPath),
                        ModelRouter::modeToDisplay(ModelRouter::resolveMode(m_cfg))));
@@ -751,11 +769,22 @@ void MainWindow::onSetMaster()
     }
     AssetRecord rec = currentRecord();
     rec.masterVersionId = c.versionId;
+    // 切换母版时同步刷新母版统一色板，防止沿用旧母版色板导致色彩错位
+    rec.palette.clear();
+    AssetSpec spec = rec.lastSpec;
+    if (spec.assetId.isEmpty())
+        spec = m_store->loadSpec(m_currentAssetId);
+    if (spec.frameSize <= 0)
+        spec = buildSpecFromUi();
+    const QImage masterRaw(c.rawAbsPath);
+    if (!masterRaw.isNull())
+        rec.palette = AssetFactory::paletteFromRaw(masterRaw, spec);
     m_store->saveAssetRecord(rec);
-    appendLog(QStringLiteral("母版已设定：%1（%2）")
+    appendLog(QStringLiteral("母版已设定：%1（%2，统一色板 %3 色）")
                   .arg(c.versionId,
                        c.direction.isEmpty() ? QStringLiteral("单帧")
-                                             : directionToDisplay(directionFromString(c.direction))));
+                                             : directionToDisplay(directionFromString(c.direction)))
+                  .arg(rec.palette.size()));
     rebuildAssetStatus();
 }
 
@@ -833,9 +862,10 @@ QString MainWindow::standardizeSelected(AssetSpec* specOut, QImage* frameOut)
     rec.lockedFrames.insert(lockKey, versionId);
     m_store->saveAssetRecord(rec);
 
-    appendLog(QStringLiteral("已标准化并锁定：%1 %2 → %3（%4x%4，%5 色）")
+    appendLog(QStringLiteral("已标准化并锁定：%1 %2 → %3（%4x%5，%6 色）")
                   .arg(lockKey, c.versionId, versionId)
-                  .arg(spec.frameSize)
+                  .arg(result.frame.width())
+                  .arg(result.frame.height())
                   .arg(result.palette.size()));
     if (specOut)
         *specOut = spec;
@@ -898,7 +928,7 @@ void MainWindow::onExport()
         QVector<QVector<QImage>> rows;
         QVector<QVector<Direction>> rowDirs;
         QVector<DeterministicChecks::FrameEntry> checkFrames;
-        QVector<QRgb> palette;
+        QVector<QRgb> palette = rec.palette;
 
         for (Direction d : order) {
             const QString key = directionToString(d);

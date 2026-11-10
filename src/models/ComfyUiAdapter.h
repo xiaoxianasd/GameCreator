@@ -12,8 +12,10 @@
 #include "models/IImageModel.h"
 
 #include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <QStringList>
 #include <QTimer>
+#include <QVector>
 
 namespace gc {
 
@@ -50,8 +52,11 @@ private:
     QStringList m_pendingRefs;    // 待上传参考图绝对路径
     QStringList m_uploadedNames;  // ComfyUI 返回的文件名
     QString m_promptId;
+    qlonglong m_currentSeed = 0;
     int m_pollCount = 0;
     bool m_cancelled = false;
+    bool m_imageEmitted = false;
+    QVector<QNetworkReply*> m_active;
 };
 
 } // namespace gc

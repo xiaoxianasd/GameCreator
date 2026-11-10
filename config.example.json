@@ -4,7 +4,8 @@
         "cloud": {
             "base_url": "https://api.siliconflow.cn/v1",
             "api_key": "",
-            "model": "black-forest-labs/FLUX.1-schnell",
+            "model": "Tongyi-MAI/Z-Image-Turbo",
+            "edit_model": "Qwen/Qwen-Image-Edit-2509",
             "timeout_ms": 180000
         },
         "comfyui": {

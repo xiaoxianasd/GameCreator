@@ -13,6 +13,8 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QPainter>
 #include <QTimer>
@@ -36,7 +38,7 @@ void exportAndCheck()
     QVector<QVector<QImage>> rows;
     QVector<QVector<Direction>> rowDirs;
     QVector<DeterministicChecks::FrameEntry> checkFrames;
-    QVector<QRgb> palette;
+    QVector<QRgb> palette = rec.palette;
 
     for (Direction d : order) {
         const QString key = directionToString(d);
@@ -247,6 +249,38 @@ bool runSizingChecks()
             std::cout << "    [" << i.severity.toStdString() << "] "
                       << i.id.toStdString() << " - " << i.message.toStdString() << std::endl;
         allOk = allOk && sizeOk && rep.passed;
+    }
+
+    // ---- 修长道具（宽 < 64，高 >> 64）降采样与色板点缀色保留检查 ----
+    {
+        AssetSpec spec;
+        spec.id = QStringLiteral("spec-slender-sword-check");
+        spec.type = AssetType::Item;
+        spec.frameSize = 64;
+        spec.paletteSize = 8;
+
+        QImage raw(512, 512, QImage::Format_ARGB32);
+        raw.fill(QColor(210, 210, 210));
+        QPainter p(&raw);
+        // 宽仅 48px (< 64)，高 400px (>> 64) 的修长铁剑 + 少量红宝石点缀色
+        p.fillRect(232, 56, 48, 400, QColor(36, 32, 42));  // 深色外轮廓
+        p.fillRect(240, 64, 32, 320, QColor(180, 195, 215)); // 大面积剑身
+        p.fillRect(248, 384, 16, 64, QColor(120, 80, 45));   // 剑柄
+        p.fillRect(252, 376, 8, 8, QColor(235, 45, 65));     // 小面积高对比红宝石点缀
+        p.end();
+
+        const StandardizeResult r = AssetFactory::standardize(raw, spec);
+        DeterministicChecks::FrameEntry e;
+        e.image = r.frame;
+        const ReviewReport rep =
+            DeterministicChecks::run(spec, QVector<DeterministicChecks::FrameEntry>{ e });
+        const bool hasRuby = r.palette.contains(qRgba(235, 45, 65, 255));
+        const bool noDup = QSet<QRgb>(r.palette.begin(), r.palette.end()).size() == r.palette.size();
+        std::cout << "[check] 修长道具降采样 & 点缀色保留: "
+                  << (rep.passed && hasRuby && noDup ? "PASS" : "FAIL")
+                  << " (palette=" << r.palette.size() << ", ruby=" << (hasRuby ? "yes" : "no") << ")"
+                  << std::endl;
+        allOk = allOk && rep.passed && hasRuby && noDup;
     }
 
     return allOk;

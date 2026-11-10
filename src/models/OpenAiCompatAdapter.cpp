@@ -1,14 +1,35 @@
 #include "models/OpenAiCompatAdapter.h"
 #include "models/PromptPolicy.h"
 
+#include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 
 namespace gc {
+namespace {
+
+// 确保落盘与后续处理收到的是标准 PNG 字节流（兼容云端网关返回 JPEG/WebP）
+QByteArray ensurePngBytes(const QByteArray& raw)
+{
+    if (raw.startsWith("\x89PNG\r\n\x1a\n"))
+        return raw;
+    const QImage img = QImage::fromData(raw);
+    if (img.isNull())
+        return {};
+    QByteArray out;
+    QBuffer buf(&out);
+    buf.open(QIODevice::WriteOnly);
+    if (!img.save(&buf, "PNG"))
+        return {};
+    return out;
+}
+
+} // namespace
 
 OpenAiCompatAdapter::OpenAiCompatAdapter(const Config& cfg, QObject* parent)
     : IImageModel(parent)
@@ -290,10 +311,11 @@ void OpenAiCompatAdapter::handleReplyJson(QNetworkReply* reply, const QString& u
     const QJsonObject first = arr.at(0).toObject();
 
     if (first.contains(QStringLiteral("b64_json"))) {
-        const QByteArray png = QByteArray::fromBase64(
+        const QByteArray raw = QByteArray::fromBase64(
             first.value(QStringLiteral("b64_json")).toString().toLatin1());
+        const QByteArray png = ensurePngBytes(raw);
         if (png.isEmpty()) {
-            emit requestFailed(QStringLiteral("b64_json 解码为空"));
+            emit requestFailed(QStringLiteral("b64_json 解码为空或图像格式不受支持"));
             return;
         }
         emit imageReady(png, 0);
@@ -320,11 +342,10 @@ void OpenAiCompatAdapter::downloadUrlImage(const QString& url)
         if (reply->error() != QNetworkReply::NoError) {
             emit requestFailed(QStringLiteral("图片下载失败：%1").arg(reply->errorString()));
         } else {
-            const QByteArray png = reply->readAll();
-            if (QImage::fromData(png, "PNG").isNull()
-                && QImage::fromData(png).isNull()) {
-                // 非 PNG：尝试按 JSON 容器再解析一次
-                handleReplyJson(reply, url);
+            const QByteArray raw = reply->readAll();
+            const QByteArray png = ensurePngBytes(raw);
+            if (png.isEmpty()) {
+                emit requestFailed(QStringLiteral("下载的图片无法解码（%1 字节）").arg(raw.size()));
             } else {
                 emit imageReady(png, 0);
             }

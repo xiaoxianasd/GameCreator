@@ -111,11 +111,11 @@ void ComfyUiAdapter::generate(const GenerationRequest& req)
         neg.append(req.spec.negativePrompt);
 
     // 生成参数暂存到内部键，上传完参考图后统一替换提交
+    m_currentSeed = QRandomGenerator::global()->bounded(1, 2147483000);
     m_workflow = workflow;
     m_workflow.insert(QStringLiteral("__gc_prompt"), prompt);
     m_workflow.insert(QStringLiteral("__gc_negative"), neg.join(QStringLiteral(", ")));
-    m_workflow.insert(QStringLiteral("__gc_seed"),
-                      QString::number(QRandomGenerator::global()->bounded(1, 2147483000)));
+    m_workflow.insert(QStringLiteral("__gc_seed"), QString::number(m_currentSeed));
     m_workflow.insert(QStringLiteral("__gc_width"),  QString::number(req.spec.modelWidth));
     m_workflow.insert(QStringLiteral("__gc_height"), QString::number(req.spec.modelHeight));
 
@@ -123,6 +123,7 @@ void ComfyUiAdapter::generate(const GenerationRequest& req)
     m_pendingRefs = req.spec.referenceImages;
     m_uploadedNames.clear();
     m_cancelled = false;
+    m_imageEmitted = false;
     m_pollCount = 0;
 
     emit statusMessage(QStringLiteral("ComfyUI：%1")
@@ -162,7 +163,9 @@ void ComfyUiAdapter::uploadNextReference()
     r.setTransferTimeout(60000);
     QNetworkReply* reply = m_nam.post(r, multi);
     multi->setParent(reply); // 随 reply 释放
+    m_active.append(reply);
     connect(reply, &QNetworkReply::finished, this, [this, reply, path] {
+        m_active.removeOne(reply);
         reply->deleteLater();
         if (m_cancelled)
             return;
@@ -210,7 +213,9 @@ void ComfyUiAdapter::submitWorkflow()
     QNetworkRequest r(QUrl(m_cfg.baseUrl + QStringLiteral("/prompt")));
     r.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply* reply = m_nam.post(r, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    m_active.append(reply);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_active.removeOne(reply);
         reply->deleteLater();
         if (m_cancelled)
             return;
@@ -247,7 +252,9 @@ void ComfyUiAdapter::pollHistory()
 
     QNetworkRequest r(QUrl(m_cfg.baseUrl + QStringLiteral("/history/") + m_promptId));
     QNetworkReply* reply = m_nam.get(r);
+    m_active.append(reply);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_active.removeOne(reply);
         reply->deleteLater();
         if (m_cancelled)
             return;
@@ -271,12 +278,15 @@ void ComfyUiAdapter::pollHistory()
 void ComfyUiAdapter::collectImages(const QJsonObject& historyEntry)
 {
     const QJsonObject outputs = historyEntry.value(QStringLiteral("outputs")).toObject();
-    bool any = false;
+    // 每次 generate() 请求只取第一张有效输出图，防止工作流含多个 SaveImage/PreviewImage 节点时
+    // 连续触发多次 imageReady 导致 TaskOrchestrator 方向队列错位
     for (auto it = outputs.begin(); it != outputs.end(); ++it) {
         const QJsonArray images = it.value().toObject().value(QStringLiteral("images")).toArray();
         for (const QJsonValue& v : images) {
             const QJsonObject img = v.toObject();
             const QString fileName = img.value(QStringLiteral("filename")).toString();
+            if (fileName.isEmpty())
+                continue;
             const QString subfolder = img.value(QStringLiteral("subfolder")).toString();
             const QString type = img.value(QStringLiteral("type")).toString(QStringLiteral("output"));
 
@@ -286,25 +296,32 @@ void ComfyUiAdapter::collectImages(const QJsonObject& historyEntry)
             q.addQueryItem(QStringLiteral("type"), type);
             QNetworkRequest r(QUrl(m_cfg.baseUrl + QStringLiteral("/view?") + q.toString(QUrl::FullyEncoded)));
             QNetworkReply* reply = m_nam.get(r);
-            any = true;
+            m_active.append(reply);
             connect(reply, &QNetworkReply::finished, this, [this, reply] {
+                m_active.removeOne(reply);
                 reply->deleteLater();
+                if (m_cancelled || m_imageEmitted)
+                    return;
                 if (reply->error() != QNetworkReply::NoError) {
                     emit requestFailed(QStringLiteral("ComfyUI 图片拉取失败：%1").arg(reply->errorString()));
                     return;
                 }
-                emit imageReady(reply->readAll(), 0);
+                m_imageEmitted = true;
+                emit imageReady(reply->readAll(), m_currentSeed);
             });
+            return;
         }
     }
-    if (!any)
-        emit requestFailed(QStringLiteral("ComfyUI 任务完成但没有输出图片"));
+    emit requestFailed(QStringLiteral("ComfyUI 任务完成但没有输出图片"));
 }
 
 void ComfyUiAdapter::cancel()
 {
     m_cancelled = true;
     m_pollTimer.stop();
+    for (QNetworkReply* r : m_active)
+        r->abort();
+    m_active.clear();
 }
 
 } // namespace gc

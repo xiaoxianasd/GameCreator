@@ -56,14 +56,15 @@ public:
         const QJsonObject root = doc.object();
 
         const QJsonObject model = root.value(QStringLiteral("model")).toObject();
-        cfg.mode = model.value(QStringLiteral("mode")).toString(QStringLiteral("mock"));
+        cfg.mode = model.value(QStringLiteral("mode")).toString(QStringLiteral("auto"));
 
         const QJsonObject cloud = model.value(QStringLiteral("cloud")).toObject();
         cfg.cloud.baseUrl = cloud.value(QStringLiteral("base_url")).toString();
         cfg.cloud.apiKey  = cloud.value(QStringLiteral("api_key")).toString();
         cfg.cloud.model   = cloud.value(QStringLiteral("model"))
                                 .toString(QStringLiteral("Tongyi-MAI/Z-Image-Turbo"));
-        cfg.cloud.editModel = cloud.value(QStringLiteral("edit_model")).toString();
+        cfg.cloud.editModel = cloud.value(QStringLiteral("edit_model"))
+                                  .toString(QStringLiteral("Qwen/Qwen-Image-Edit-2509"));
         cfg.cloud.timeoutMs = cloud.value(QStringLiteral("timeout_ms")).toInt(180000);
 
         const QJsonObject comfy = model.value(QStringLiteral("comfyui")).toObject();
@@ -86,8 +87,11 @@ public:
         cloud.insert(QStringLiteral("api_key"), QString());
         cloud.insert(QStringLiteral("model"), QStringLiteral("Tongyi-MAI/Z-Image-Turbo"));
         cloud.insert(QStringLiteral("edit_model"), QStringLiteral("Qwen/Qwen-Image-Edit-2509"));
+        cloud.insert(QStringLiteral("timeout_ms"), 180000);
         comfy.insert(QStringLiteral("base_url"), QStringLiteral("http://127.0.0.1:8188"));
         comfy.insert(QStringLiteral("workflow"), QStringLiteral("workflows/comfyui_example.json"));
+        comfy.insert(QStringLiteral("poll_ms"), 1000);
+        comfy.insert(QStringLiteral("max_polls"), 180);
         model.insert(QStringLiteral("mode"), QStringLiteral("auto"));
         model.insert(QStringLiteral("cloud"), cloud);
         model.insert(QStringLiteral("comfyui"), comfy);
@@ -113,6 +117,8 @@ public:
         cloud.insert(QStringLiteral("timeout_ms"), cfg.cloud.timeoutMs);
         comfy.insert(QStringLiteral("base_url"), cfg.comfy.baseUrl);
         comfy.insert(QStringLiteral("workflow"), cfg.comfy.workflowPath);
+        comfy.insert(QStringLiteral("poll_ms"), cfg.comfy.pollMs);
+        comfy.insert(QStringLiteral("max_polls"), cfg.comfy.maxPolls);
         model.insert(QStringLiteral("mode"), cfg.mode);
         model.insert(QStringLiteral("cloud"), cloud);
         model.insert(QStringLiteral("comfyui"), comfy);

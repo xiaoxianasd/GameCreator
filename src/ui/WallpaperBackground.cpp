@@ -360,7 +360,6 @@ void WallpaperBackground::beginFade()
 {
     if (m_next < 0 || m_next >= m_pool.size())
         return;
-    rebuildBlurred(); // 提前准备下一张的模糊图，面板同步过渡
     m_fade->stop();
     m_fade->start();
 }
@@ -371,7 +370,8 @@ QImage WallpaperBackground::makeBlurred(const QImage& src)
 {
     if (src.isNull())
         return {};
-    // 先缩小再模糊，大幅降低成本；毛玻璃不需要高频细节
+    // 缩小到 320px 宽做高斯模糊并直接保留该尺寸；
+    // coverSourceRect 会按 m_blurred 自身宽高自动换算采样矩形，无需放大回 2K 原图尺寸
     const int w = qMin(320, src.width());
     const QImage small = src.scaledToWidth(w, Qt::SmoothTransformation)
                              .convertToFormat(QImage::Format_ARGB32_Premultiplied);
@@ -386,8 +386,7 @@ QImage WallpaperBackground::makeBlurred(const QImage& src)
     QPainter p(&out);
     scene.render(&p);
     p.end();
-    // 放大回原尺寸，供 coverSourceRect 用同一套坐标换算
-    return out.scaled(src.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    return out;
 }
 
 void WallpaperBackground::rebuildBlurred()

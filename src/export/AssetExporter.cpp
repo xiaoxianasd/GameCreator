@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +18,17 @@ QString uniquePath(const QDir& dir, const QString& base, const QString& ext)
     int i = 1;
     while (QFile::exists(path)) {
         path = dir.filePath(QStringLiteral("%1-%2.%3").arg(base).arg(i).arg(ext));
+        ++i;
+    }
+    return path;
+}
+
+QString uniqueDirPath(const QDir& dir, const QString& baseDirName)
+{
+    QString path = dir.filePath(baseDirName);
+    int i = 1;
+    while (QFileInfo::exists(path)) {
+        path = dir.filePath(QStringLiteral("%1-%2").arg(baseDirName).arg(i));
         ++i;
     }
     return path;
@@ -222,8 +234,8 @@ QStringList AssetExporter::exportSheet(const SheetData& data, Format format,
     }
 
     case Format::SeparateFrames: {
-        // 单帧文件夹：从图集重新裁出每方向单帧
-        QDir sub(dir.filePath(baseName + QStringLiteral("_frames")));
+        // 单帧文件夹：从图集重新裁出每方向单帧（独立目录，避免多次导出混杂）
+        QDir sub(uniqueDirPath(dir, baseName + QStringLiteral("_frames")));
         if (!sub.exists() && !sub.mkpath(QStringLiteral("."))) {
             if (error) *error = QStringLiteral("无法创建帧目录");
             return written;
@@ -260,7 +272,6 @@ QStringList AssetExporter::exportSheet(const SheetData& data, Format format,
     }
 
     case Format::Godot4: {
-        const QString sheetName = baseName + QStringLiteral("-sheet.png");
         const QString sheetPath = uniquePath(dir, baseName + QStringLiteral("-sheet"),
                                               QStringLiteral("png"));
         if (!savePng(data.sheet, sheetPath)) {
@@ -268,11 +279,13 @@ QStringList AssetExporter::exportSheet(const SheetData& data, Format format,
             return written;
         }
         written.append(sheetPath);
+        const QString actualSheetName = QFileInfo(sheetPath).fileName();
         // SpriteFrames 资源：动画按 idle_<方向> 组织
         const QString tresName = uniquePath(dir, baseName, QStringLiteral("tres"));
+        const QString actualTresName = QFileInfo(tresName).fileName();
         QFile tf(tresName);
         if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-            tf.write(godotTres(data, sheetName).toUtf8());
+            tf.write(godotTres(data, actualSheetName).toUtf8());
             written.append(tresName);
         }
         // 使用说明（导入设置：像素风必须关滤镜）
@@ -282,10 +295,11 @@ QStringList AssetExporter::exportSheet(const SheetData& data, Format format,
         if (rf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
             QTextStream rs(&rf); // Qt6 默认 UTF-8
             rs << QStringLiteral("Godot 4 使用说明\n");
-            rs << QStringLiteral("1. 把 %1 和 .tres 文件一起复制到你的 Godot 项目目录（保持同目录）。\n").arg(sheetName);
-            rs << QStringLiteral("2. 选中 %1，在 Import 面板把 Filter 关掉（Nearest），点击 Reimport。\n").arg(sheetName);
+            rs << QStringLiteral("1. 把 %1 和 %2 一起复制到你的 Godot 项目根目录（若放入子目录，请在 Godot 中重新指定 ext_resource 路径）。\n")
+                      .arg(actualSheetName, actualTresName);
+            rs << QStringLiteral("2. 选中 %1，在 Import 面板把 Filter 关掉（Nearest），点击 Reimport。\n").arg(actualSheetName);
             rs << QStringLiteral("   建议同时 preset 为 2D Pixel，避免缩放模糊。\n");
-            rs << QStringLiteral("3. AnimatedSprite2D 的 SpriteFrames 属性选择 %1.tres，即可播放 idle_down / idle_up 等动画。\n").arg(baseName);
+            rs << QStringLiteral("3. AnimatedSprite2D 的 SpriteFrames 属性选择 %1，即可播放 idle_down / idle_up 等动画。\n").arg(actualTresName);
             rs << QStringLiteral("4. 锚点为底部中心：节点的 Offset 请按脚底对齐（pivot y=1）。\n");
             written.append(readmePath);
         }
@@ -293,7 +307,6 @@ QStringList AssetExporter::exportSheet(const SheetData& data, Format format,
     }
 
     case Format::TexturePackerJson: {
-        const QString sheetName = baseName + QStringLiteral("-sheet.png");
         const QString sheetPath = uniquePath(dir, baseName + QStringLiteral("-sheet"),
                                               QStringLiteral("png"));
         if (!savePng(data.sheet, sheetPath)) {
@@ -301,10 +314,11 @@ QStringList AssetExporter::exportSheet(const SheetData& data, Format format,
             return written;
         }
         written.append(sheetPath);
+        const QString actualSheetName = QFileInfo(sheetPath).fileName();
         const QString jsonPath = uniquePath(dir, baseName, QStringLiteral("json"));
         QFile jf(jsonPath);
         if (jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            jf.write(QJsonDocument(texturePackerJson(data, sheetName)).toJson(QJsonDocument::Indented));
+            jf.write(QJsonDocument(texturePackerJson(data, actualSheetName)).toJson(QJsonDocument::Indented));
             written.append(jsonPath);
         }
         break;

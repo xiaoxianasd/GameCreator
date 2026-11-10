@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 
 namespace gc {
 namespace {
@@ -35,20 +36,43 @@ QImage fitToSquare(const QImage& src, int size)
     return out;
 }
 
-// 中位切分的一个颜色盒
+struct ColorEntry {
+    QRgb color = 0;
+    int count = 0;
+};
+
+// 中位切分的一个颜色盒（按去重后的颜色及其像素频次组织，防止纯色块被重复空切）
 struct ColorBox {
-    QVector<QRgb> pixels;
-    int rangeChannel() const
+    QVector<ColorEntry> entries;
+    qint64 totalPixels = 0;
+
+    void recomputeCount()
     {
-        if (pixels.isEmpty())
+        totalPixels = 0;
+        for (const ColorEntry& e : entries)
+            totalPixels += e.count;
+    }
+
+    // 返回最大跨度通道 (0=R, 1=G, 2=B)，并通过 outSpan 返回该通道跨度 (0..255)
+    int rangeChannel(int* outSpan = nullptr) const
+    {
+        if (entries.isEmpty()) {
+            if (outSpan) *outSpan = 0;
             return -1;
+        }
         int rmin = 255, rmax = 0, gmin = 255, gmax = 0, bmin = 255, bmax = 0;
-        for (QRgb c : pixels) {
+        for (const ColorEntry& e : entries) {
+            const QRgb c = e.color;
             rmin = qMin(rmin, int(qRed(c)));   rmax = qMax(rmax, int(qRed(c)));
             gmin = qMin(gmin, int(qGreen(c))); gmax = qMax(gmax, int(qGreen(c)));
             bmin = qMin(bmin, int(qBlue(c)));  bmax = qMax(bmax, int(qBlue(c)));
         }
         const int rr = rmax - rmin, gr = gmax - gmin, br = bmax - bmin;
+        const int span = qMax(rr, qMax(gr, br));
+        if (outSpan)
+            *outSpan = span;
+        if (span <= 0)
+            return -1;
         if (rr >= gr && rr >= br) return 0;
         if (gr >= br) return 1;
         return 2;
@@ -69,14 +93,49 @@ QImage AssetFactory::removeBackground(const QImage& src0, int tolerance)
 
     const int w = img.width(), h = img.height();
 
-    // 键色：四角颜色中位数（抗单角反锯齿干扰）
-    QVector<QRgb> corners;
-    const int m = qMax(1, qMin(w, h) / 64); // 采样角部小区域
-    for (const QPoint& pt : { QPoint(0, 0), QPoint(w - m, 0), QPoint(0, h - m), QPoint(w - m, h - m) }) {
-        corners.append(img.pixel(qBound(0, pt.x(), w - 1), qBound(0, pt.y(), h - 1)));
+    // 若四边像素本来已是透明背景（如 gpt-image transparent 模式），直接返回避免误伤深色轮廓
+    int borderTotal = 0, borderTransparent = 0;
+    for (int x = 0; x < w; ++x) {
+        borderTotal += 2;
+        if (qAlpha(img.pixel(x, 0)) < 16) ++borderTransparent;
+        if (qAlpha(img.pixel(x, h - 1)) < 16) ++borderTransparent;
     }
-    std::sort(corners.begin(), corners.end());
-    const QRgb key = corners[corners.size() / 2];
+    for (int y = 1; y < h - 1; ++y) {
+        borderTotal += 2;
+        if (qAlpha(img.pixel(0, y)) < 16) ++borderTransparent;
+        if (qAlpha(img.pixel(w - 1, y)) < 16) ++borderTransparent;
+    }
+    if (borderTotal > 0 && borderTransparent * 2 >= borderTotal)
+        return img;
+
+    // 键色：采样四角与四边中点共 8 个边缘锚点，在 RGB 空间取到其余样本距离之和最小的中心点（Medoid）
+    const int m = qMax(1, qMin(w, h) / 64);
+    const QPoint samplePts[8] = {
+        QPoint(m, m), QPoint(w - 1 - m, m),
+        QPoint(m, h - 1 - m), QPoint(w - 1 - m, h - 1 - m),
+        QPoint(w / 2, m), QPoint(w / 2, h - 1 - m),
+        QPoint(m, h / 2), QPoint(w - 1 - m, h / 2)
+    };
+    QVector<QRgb> samples;
+    for (const QPoint& pt : samplePts) {
+        const QRgb px = img.pixel(qBound(0, pt.x(), w - 1), qBound(0, pt.y(), h - 1));
+        if (qAlpha(px) >= 16)
+            samples.append(px);
+    }
+    if (samples.isEmpty())
+        return img;
+
+    QRgb key = samples.first();
+    qint64 bestSumDist = LLONG_MAX;
+    for (int i = 0; i < samples.size(); ++i) {
+        qint64 sumDist = 0;
+        for (int j = 0; j < samples.size(); ++j)
+            sumDist += colorDist(samples[i], samples[j]);
+        if (sumDist < bestSumDist) {
+            bestSumDist = sumDist;
+            key = samples[i];
+        }
+    }
 
     const int tol2 = tolerance * tolerance * 3;
 
@@ -87,7 +146,8 @@ QImage AssetFactory::removeBackground(const QImage& src0, int tolerance)
         const size_t idx = size_t(y) * size_t(w) + size_t(x);
         if (visited[idx])
             return;
-        if (colorDist(img.pixel(x, y), key) > tol2)
+        const QRgb px = img.pixel(x, y);
+        if (qAlpha(px) >= 16 && colorDist(px, key) > tol2)
             return;
         visited[idx] = 1;
         queue.enqueue(QPoint(x, y));
@@ -137,15 +197,17 @@ QImage AssetFactory::cropToContent(const QImage& src)
 
 QImage AssetFactory::downscaleBlock(const QImage& src, int targetSize)
 {
-    if (src.width() <= targetSize || src.height() <= targetSize)
+    if (src.isNull() || targetSize < 1)
         return src;
 
-    // 整数块因子：512→64 取 8；结果尺寸不小于 target 的一半
-    const int factor = qMax(2, qRound(double(src.width()) / targetSize));
-    const int dw = src.width() / factor;
-    const int dh = src.height() / factor;
-    if (dw < 1 || dh < 1)
+    // 按长边等比缩放到 targetSize 内，避免瘦高角色/修长武器在 normalizeFrame 中触发二次最近邻抽点
+    const int maxSide = qMax(src.width(), src.height());
+    if (maxSide <= targetSize)
         return src;
+
+    const double scale = double(targetSize) / double(maxSide);
+    const int dw = qBound(1, qRound(src.width() * scale), targetSize);
+    const int dh = qBound(1, qRound(src.height() * scale), targetSize);
 
     QImage out(dw, dh, QImage::Format_ARGB32);
     out.fill(Qt::transparent);
@@ -155,16 +217,21 @@ QImage AssetFactory::downscaleBlock(const QImage& src, int targetSize)
     };
 
     for (int y = 0; y < dh; ++y) {
+        const int y0 = (y * src.height()) / dh;
+        const int y1 = qBound(y0 + 1, ((y + 1) * src.height()) / dh, src.height());
         for (int x = 0; x < dw; ++x) {
+            const int x0 = (x * src.width()) / dw;
+            const int x1 = qBound(x0 + 1, ((x + 1) * src.width()) / dw, src.width());
+
             // 统计块内不透明像素：5bit 量化桶做众数，同时记录最暗色（轮廓保护）
             QHash<quint32, int> counts;
             QHash<quint32, qint64> sumsR, sumsG, sumsB;
             int opaque = 0, total = 0;
             QRgb darkest = 0;
             int darkestLuma = INT_MAX;
-            for (int by = 0; by < factor; ++by) {
-                for (int bx = 0; bx < factor; ++bx) {
-                    const QRgb px = src.pixel(x * factor + bx, y * factor + by);
+            for (int by = y0; by < y1; ++by) {
+                for (int bx = x0; bx < x1; ++bx) {
+                    const QRgb px = src.pixel(bx, by);
                     ++total;
                     if (qAlpha(px) < 8)
                         continue;
@@ -219,38 +286,60 @@ QImage AssetFactory::upscaleNearest(const QImage& src, int factor)
 
 QVector<QRgb> AssetFactory::buildPalette(const QImage& src, int maxColors)
 {
-    QVector<QRgb> pixels;
+    QHash<QRgb, int> hist;
     const int step = qMax(1, qMax(src.width(), src.height()) / 256); // 采样
-    for (int y = 0; y < src.height(); y += step)
+    for (int y = 0; y < src.height(); y += step) {
         for (int x = 0; x < src.width(); x += step) {
             const QRgb px = src.pixel(x, y);
-            if (qAlpha(px) > 128)
-                pixels.append(px);
+            if (qAlpha(px) > 128) {
+                const QRgb opaqueRgb = qRgba(qRed(px), qGreen(px), qBlue(px), 255);
+                ++hist[opaqueRgb];
+            }
         }
-    if (pixels.isEmpty())
+    }
+    if (hist.isEmpty())
         return { qRgba(255, 255, 255, 255) };
 
     maxColors = qBound(2, maxColors, 256);
 
+    QVector<ColorEntry> uniqueEntries;
+    uniqueEntries.reserve(hist.size());
+    for (auto it = hist.constBegin(); it != hist.constEnd(); ++it)
+        uniqueEntries.append(ColorEntry{ it.key(), it.value() });
+
+    // 图像唯一色本就未超过上限时，直接原样保留全部颜色，避免无谓平均丢失点缀色
+    if (uniqueEntries.size() <= maxColors) {
+        std::sort(uniqueEntries.begin(), uniqueEntries.end(),
+                  [](const ColorEntry& a, const ColorEntry& b) {
+                      return a.count != b.count ? a.count > b.count : a.color < b.color;
+                  });
+        QVector<QRgb> exact;
+        exact.reserve(uniqueEntries.size());
+        for (const ColorEntry& e : uniqueEntries)
+            exact.append(e.color);
+        return exact;
+    }
+
     QList<ColorBox> boxes;
     ColorBox first;
-    first.pixels = pixels;
+    first.entries = uniqueEntries;
+    first.recomputeCount();
     boxes.append(first);
 
     while (boxes.size() < maxColors) {
-        // 找像素最多且有色域范围的盒子切分
+        // 选择色域跨度与像素权重综合最高的非退化盒子切分（兼顾主色调过渡与高对比点缀色）
         int bestIdx = -1;
-        int bestRange = 0;
-        int bestCount = 0;
+        double bestScore = -1.0;
         for (int i = 0; i < boxes.size(); ++i) {
-            const int range = boxes[i].rangeChannel() >= 0 ? 1 : 0;
-            const int ch = boxes[i].rangeChannel();
-            Q_UNUSED(ch);
-            if (boxes[i].pixels.size() < 2)
+            if (boxes[i].entries.size() < 2)
                 continue;
-            // 简化策略：优先切像素最多的盒子
-            if (range > 0 && boxes[i].pixels.size() > bestCount) {
-                bestCount = boxes[i].pixels.size();
+            int span = 0;
+            const int ch = boxes[i].rangeChannel(&span);
+            if (ch < 0 || span <= 0)
+                continue;
+            const double score = double(span) * std::sqrt(double(qMax<qint64>(1, boxes[i].totalPixels)));
+            if (score > bestScore) {
+                bestScore = score;
                 bestIdx = i;
             }
         }
@@ -259,30 +348,54 @@ QVector<QRgb> AssetFactory::buildPalette(const QImage& src, int maxColors)
 
         ColorBox box = boxes.takeAt(bestIdx);
         const int ch = box.rangeChannel();
-        std::sort(box.pixels.begin(), box.pixels.end(), [ch](QRgb a, QRgb b) {
-            const int ca = ch == 0 ? qRed(a) : (ch == 1 ? qGreen(a) : qBlue(a));
-            const int cb = ch == 0 ? qRed(b) : (ch == 1 ? qGreen(b) : qBlue(b));
-            return ca < cb;
+        std::sort(box.entries.begin(), box.entries.end(), [ch](const ColorEntry& a, const ColorEntry& b) {
+            const int ca = ch == 0 ? qRed(a.color) : (ch == 1 ? qGreen(a.color) : qBlue(a.color));
+            const int cb = ch == 0 ? qRed(b.color) : (ch == 1 ? qGreen(b.color) : qBlue(b.color));
+            if (ca != cb)
+                return ca < cb;
+            return a.color < b.color;
         });
-        const int mid = box.pixels.size() / 2;
+
+        // 按累计像素数的中位点切分，同时保证左右盒至少各含 1 个不同颜色
+        qint64 half = box.totalPixels / 2;
+        qint64 acc = 0;
+        int splitIdx = 1;
+        for (int i = 0; i < box.entries.size() - 1; ++i) {
+            acc += box.entries[i].count;
+            if (acc >= half) {
+                splitIdx = i + 1;
+                break;
+            }
+        }
+        splitIdx = qBound(1, splitIdx, int(box.entries.size()) - 1);
+
         ColorBox left, right;
-        left.pixels = box.pixels.mid(0, mid);
-        right.pixels = box.pixels.mid(mid);
+        left.entries = box.entries.mid(0, splitIdx);
+        left.recomputeCount();
+        right.entries = box.entries.mid(splitIdx);
+        right.recomputeCount();
         boxes.append(left);
         boxes.append(right);
     }
 
     QVector<QRgb> palette;
+    QSet<QRgb> seen;
     palette.reserve(boxes.size());
     for (const ColorBox& b : boxes) {
-        if (b.pixels.isEmpty())
+        if (b.entries.isEmpty() || b.totalPixels <= 0)
             continue;
         qint64 r = 0, g = 0, bl = 0;
-        for (QRgb c : b.pixels) {
-            r += qRed(c); g += qGreen(c); bl += qBlue(c);
+        for (const ColorEntry& e : b.entries) {
+            r  += qint64(qRed(e.color))   * e.count;
+            g  += qint64(qGreen(e.color)) * e.count;
+            bl += qint64(qBlue(e.color))  * e.count;
         }
-        palette.append(qRgba(int(r / b.pixels.size()), int(g / b.pixels.size()),
-                             int(bl / b.pixels.size()), 255));
+        const QRgb avg = qRgba(int(r / b.totalPixels), int(g / b.totalPixels),
+                               int(bl / b.totalPixels), 255);
+        if (!seen.contains(avg)) {
+            seen.insert(avg);
+            palette.append(avg);
+        }
     }
     if (palette.isEmpty())
         palette.append(qRgba(255, 255, 255, 255));
@@ -296,8 +409,12 @@ QVector<QRgb> AssetFactory::paletteFromRaw(const QImage& raw, const AssetSpec& s
     QImage img = raw.convertToFormat(QImage::Format_ARGB32);
     if (spec.type != AssetType::Scene && !spec.sourceHasAlpha)
         img = removeBackground(img);
-    img = cropToContent(img);
-    img = downscaleBlock(img, spec.outputSize());
+    if (spec.type != AssetType::Scene) {
+        img = cropToContent(img);
+        img = downscaleBlock(img, qMax(1, spec.frameSize - 2));
+    } else {
+        img = downscaleBlock(img, spec.outputSize());
+    }
     return buildPalette(img, spec.paletteSize);
 }
 
@@ -308,12 +425,13 @@ QImage AssetFactory::quantize(const QImage& src, const QVector<QRgb>& palette, b
     QImage out = src.convertToFormat(QImage::Format_ARGB32);
     const int w = out.width(), h = out.height();
 
-    // 预建 32x32x32 RGB 立方体加速最近色查找
-    QVector<qint16> cache(32 * 32 * 32, -1);
+    // 精确 RGB 哈希缓存，避免 5-bit 粗粒度桶在边界色上的近似偏差
+    QHash<QRgb, QRgb> cache;
     auto nearest = [&](QRgb c) -> QRgb {
-        const int key = ((qRed(c) >> 3) << 10) | ((qGreen(c) >> 3) << 5) | (qBlue(c) >> 3);
-        if (cache[key] >= 0)
-            return palette[cache[key]];
+        const QRgb rgbKey = c & 0x00FFFFFFu;
+        auto it = cache.constFind(rgbKey);
+        if (it != cache.constEnd())
+            return it.value();
         int bestDist = INT_MAX;
         int bestIdx = 0;
         for (int i = 0; i < palette.size(); ++i) {
@@ -323,8 +441,9 @@ QImage AssetFactory::quantize(const QImage& src, const QVector<QRgb>& palette, b
                 bestIdx = i;
             }
         }
-        cache[key] = qint16(bestIdx);
-        return palette[bestIdx];
+        const QRgb mapped = palette[bestIdx];
+        cache.insert(rgbKey, mapped);
+        return mapped;
     };
 
     if (!dither) {
@@ -441,8 +560,9 @@ StandardizeResult AssetFactory::standardize(const QImage& raw, const AssetSpec& 
     // 3. 裁切到内容
     img = cropToContent(img);
 
-    // 4. 整数倍降采样到目标像素网格
-    img = downscaleBlock(img, spec.frameSize);
+    // 4. 按内框尺寸（frameSize - 2，预留四周至少 1px 透明边）一步降采样到位，
+    //    避免在 normalizeFrame 中触发二次最近邻缩放而破坏轮廓
+    img = downscaleBlock(img, qMax(1, spec.frameSize - 2));
 
     // 5. 调色板量化（角色多方向共用母版色板，防止方向间色彩漂移）
     QVector<QRgb> pal = sharedPalette.isEmpty()

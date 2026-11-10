@@ -53,25 +53,35 @@ QColor MockAdapter::referenceDominantColor(const QString& path) const
     QImage ref(path);
     if (ref.isNull())
         return QColor();
-    // 取中央 50% 区域非背景像素的平均色作为“身份色”
-    QImage sub = ref.copy(ref.width() / 4, ref.height() / 4, ref.width() / 2, ref.height() / 2)
-                     .convertToFormat(QImage::Format_ARGB32);
-    qint64 r = 0, g = 0, b = 0, n = 0;
-    for (int y = 0; y < sub.height(); y += 4) {
-        for (int x = 0; x < sub.width(); x += 4) {
-            QRgb px = sub.pixel(x, y);
-            QColor c(px);
+    ref = ref.convertToFormat(QImage::Format_ARGB32);
+
+    // 优先取躯干中心像素（与 drawCharacter 躯干区域 bx=13..18, by=17..20 对应）
+    const QColor torsoCenter(ref.pixel(ref.width() / 2, ref.height() * 18 / kGrid));
+    if (torsoCenter.alpha() >= 128 && torsoCenter.saturation() >= 40)
+        return torsoCenter;
+
+    // 通用回退：统计中央区域高饱和度像素的众数色（排除灰色背景与深色描边）
+    QImage sub = ref.copy(ref.width() / 4, ref.height() / 4, ref.width() / 2, ref.height() / 2);
+    QHash<QRgb, int> counts;
+    QRgb bestRgb = 0;
+    int bestCount = 0;
+    for (int y = 0; y < sub.height(); y += 2) {
+        for (int x = 0; x < sub.width(); x += 2) {
+            const QRgb px = sub.pixel(x, y);
             if (qAlpha(px) < 128)
                 continue;
-            // 排除常见纯背景灰
-            if (c.value() > 235 && c.saturation() < 20)
+            const QColor c(px);
+            if (c.saturation() < 30 || c.value() < 55)
                 continue;
-            r += qRed(px); g += qGreen(px); b += qBlue(px); ++n;
+            const QRgb key = qRgb(qRed(px), qGreen(px), qBlue(px));
+            const int cnt = ++counts[key];
+            if (cnt > bestCount) {
+                bestCount = cnt;
+                bestRgb = key;
+            }
         }
     }
-    if (n == 0)
-        return QColor();
-    return QColor(int(r / n), int(g / n), int(b / n));
+    return bestCount > 0 ? QColor(bestRgb) : QColor();
 }
 
 void MockAdapter::generate(const GenerationRequest& req)
